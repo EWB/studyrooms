@@ -1,0 +1,1251 @@
+diff --git a/README.txt b/README.txt
+index b90c316..781500e 100644
+--- a/README.txt
++++ b/README.txt
+@@ -29,9 +29,10 @@ The use of the DateInterval class means that we require PHP version >5.3.
+ 
+ -- INSTALLATION --
+ 
+-- Activate all the Studyroom modules and their dependencies.
+-- Visit admin/studyroom/locations create a location type (e.g. Estrella Hall).
+-- Visit admin/studyroom/spaces and create spaces (e.g. Room 1, Lounge 3).
++- Activate the following mandatory modules: studyroom, studyroom_user, studyroom_availability, studyroom_space, studyroom_reservation
++- Activate any optional modules: studyroom_closed, studyroom_hours
++- Visit admin/structure/studyroom/locations and create a location type (e.g. Estrella Hall).
++- Visit admin/structure/studyroom/spaces and create spaces (e.g. Room 1, Lounge 3).
+ 
+ -- CONTACT --
+ 
+diff --git a/modules/studyroom_availability/studyroom_availability.inc b/modules/studyroom_availability/studyroom_availability.inc
+index 8a074c4..d97aee3 100644
+--- a/modules/studyroom_availability/studyroom_availability.inc
++++ b/modules/studyroom_availability/studyroom_availability.inc
+@@ -22,7 +22,7 @@ class SpaceAvailability {
+   /**
+    * Build Availability for all spaces based on date.
+    */
+-  public function checkAvailabilityByDate($spaces, $date, $is_today = FALSE) {
++  public function spaceAvailabilityByDate($spaces, $date, $is_today = FALSE) {
+     $studyroom = new Studyroom();
+     $this->user_types = studyroom_reservation_type_user_access();
+ 
+@@ -31,7 +31,7 @@ class SpaceAvailability {
+       $spaces[$space_id]->reservations = studyroom_reservation_per_space_per_day($space_id, $date->format('Y-m-d'));
+       $spaces[$space_id]->max_days_advance = $studyroom->getMaxDaysAdvance($space);
+ 
+-      $this->spaces[$space_id] = $space->name;
++      $this->spaces[$space_id] = $space->label();
+       $url = studyroom_space_uri($space);
+       $this->spaces_header[$space_id] = l(t($space->label()), $url['path'] . '/' . $date->format('Y/W'));
+     }
+@@ -54,7 +54,7 @@ class SpaceAvailability {
+         $type = '';
+         $rows[$x]['values'][$id]['class'][] = 'space';
+ 
+-        if (!$space->hour_limits['empty'] && ($time >= $space->hour_limits['start_time'] && $time < $space->hour_limits['end_time'])) {
++        if ($space->hour_limits !== FALSE && ($time >= $space->hour_limits['start_time'] && $time < $space->hour_limits['end_time'])) {
+           // Its a good time of day.
+           if (!empty($space->reservations)) {
+             $loop_time = strtotime(date_format_date($date, 'custom', 'd-m-Y') . ' ' . date_format_date($time, 'custom', 'H:i:s'));
+diff --git a/modules/studyroom_availability/studyroom_availability.module b/modules/studyroom_availability/studyroom_availability.module
+index 26561e4..a513be5 100644
+--- a/modules/studyroom_availability/studyroom_availability.module
++++ b/modules/studyroom_availability/studyroom_availability.module
+@@ -2,7 +2,7 @@
+ 
+ /**
+  * @file
+- * Main module for the studyroom availabily.
++ * Main module for the studyroom availability.
+  */
+ 
+ 
+@@ -12,14 +12,14 @@
+ function studyroom_availability_menu() {
+   $items = array();
+ 
+-  $items['availability'] = array(
++  $items['studyroom/availability'] = array(
+     'title' => 'Studyroom Availability',
+     'page callback' => 'studyroom_availability_page',
+     'access arguments' => array('access content'),
+     'type' => MENU_NORMAL_ITEM,
+   );
+ 
+-  $items['availability/%location/%date'] = array(
++  $items['studyroom/availability/%location/%date'] = array(
+     'title' => 'Studyroom Availability',
+     'page callback' => 'studyroom_availability_page',
+     'page arguments' => array(1, 2),
+@@ -63,8 +63,17 @@ function studyroom_availability_theme() {
+       'template' => 'studyroom-availability-search',
+     ),
+     'studyroom_availability_results' => $base + array(
++      'variables' => array(
++        'login_notification_message' => NULL,
++        'login_notification_message_type' => NULL,
++      ),
+       'template' => 'studyroom-availability-results',
+     ),
++    'studyroom_availability_week_navigation' => $base + array(
++      'variables' => array(
++        'links' => array(),
++      ),
++    ),
+   );
+ }
+ 
+@@ -112,11 +121,7 @@ function studyroom_availability_page($location = NULL, $date = NULL) {
+   }
+ 
+   if (isset($date_obj) && $loc_found) {
+-    if (!user_is_logged_in()) {
+-      drupal_set_message(t('You must !login to make a reservation.',
+-        array('!login' => l('Sign in', 'user/login', array('query' => drupal_get_destination())))));
+-    }
+-    $content['date'] = '<p class="studyroom-availability-date">' . $date_obj->format('D, m/d/Y') . '</p>';
++    $content['date'] = $date_obj;
+     $content['results'] = studyroom_availability_spaces($location_obj, $date_obj);
+     $output = theme('studyroom_availability_results', $content);
+   }
+@@ -201,7 +206,7 @@ function studyroom_availability_search_form($form, $form_state) {
+  */
+ function studyroom_availability_search_form_submit(&$form, &$form_state) {
+   $search_date = new DateTime($form_state['values']['search_date']);
+-  drupal_goto('availability/' . $form_state['values']['location'] . '/' . $search_date->format('Y-m-d'));
++  drupal_goto('studyroom/availability/' . $form_state['values']['location'] . '/' . $search_date->format('Y-m-d'));
+ }
+ 
+ /**
+@@ -223,7 +228,7 @@ function studyroom_availability_spaces($location, $date) {
+   $is_today = ($interval == 0) ? TRUE : FALSE;
+ 
+   $availability = new SpaceAvailability();
+-  $items = $availability->checkAvailabilityByDate($spaces, $date, $is_today);
++  $items = $availability->spaceAvailabilityByDate($spaces, $date, $is_today);
+ 
+   $results = theme('studyroom_availability_day', array(
+     'items' => $items,
+diff --git a/modules/studyroom_availability/theme/studyroom-availability-results.tpl.php b/modules/studyroom_availability/theme/studyroom-availability-results.tpl.php
+index a87f4b1..8098665 100644
+--- a/modules/studyroom_availability/theme/studyroom-availability-results.tpl.php
++++ b/modules/studyroom_availability/theme/studyroom-availability-results.tpl.php
+@@ -5,8 +5,22 @@
+  * Default theme implementation to display the results page.
+  *
+  * Available variables:
++ * - $date: The query date specified by the user
++ * - $login_notification_message: Notification message to display if a user is not logged in
++ * - $login_notification_message_type: Type of notification message to display. See drupal_set_message().
++ *
++ * @see template_preprocess_studyroom_availability_results()
++ *
++ * @ingroup themeable
+  */
+ ?>
+-<?php print render($date); ?>
++<?php
++  if (!user_is_logged_in()) {
++    drupal_set_message($login_notification_message, $login_notification_message_type);
++  }
++?>
++<?php
++  print '<p class="studyroom-availability-date">' . $date->format('D, m/d/Y') . '</p>';
++?>
+ <?php print render($location); ?>
+ <?php print render($results); ?>
+diff --git a/modules/studyroom_availability/theme/theme.inc b/modules/studyroom_availability/theme/theme.inc
+index f2d78e2..55d84b1 100644
+--- a/modules/studyroom_availability/theme/theme.inc
++++ b/modules/studyroom_availability/theme/theme.inc
+@@ -16,24 +16,24 @@ function template_preprocess_studyroom_availability_day(&$variables) {
+ 
+   // Calculate forward and back dates for calendar.
+   $current = new DateTime("now");
+-  $forward_date = $variables['date'];
++  $forward_date = clone $variables['date'];
+   $backward_date = clone $forward_date;
+   $forward_date->add(new DateInterval('P1D'));
+   $backward_date->sub(new DateInterval('P1D'));
+ 
+   // Create links.
+-  $path = 'availability/' . $location->type . '/';
++  $path = 'studyroom/availability/' . $location->type . '/';
+ 
+   $backward_path = $path . $backward_date->format('Y-m-d');
+-  $links['prev'] = l(t('Previous Day'), $backward_path);
++  $nav['links']['prev'] = l(t('Previous Day'), $backward_path);
+ 
+   $current_path = $path . $current->format('Y-m-d');
+-  $links['current'] = l(t('Today'), $current_path);
++  $nav['links']['current'] = l(t('Today'), $current_path);
+ 
+   $forward_path = $path . $forward_date->format('Y-m-d');
+-  $links['next'] = l(t('Next Day'), $forward_path);
++  $nav['links']['next'] = l(t('Next Day'), $forward_path);
+ 
+-  $variables['page']['navigation'] = studyroom_availability_week_navigation($links);
++  $variables['page']['navigation'] = theme('studyroom_availability_week_navigation', $nav);
+ }
+ 
+ /**
+@@ -63,27 +63,27 @@ function template_preprocess_studyroom_availability_week(&$variables) {
+ 
+   // Create links.
+   $forward_path = STUDYROOM_SPACE_PATH . $space->space_id . '/' . $forward_date->format('Y') . '/' . $forward_date_week;
+-  $links['next'] = l(t('Next Week'), $forward_path);
++  $nav['links']['next'] = l(t('Next Week'), $forward_path);
+ 
+   $backward_path = STUDYROOM_SPACE_PATH . $space->space_id . '/' . $backward_date->format('Y') . '/' . $backward_date_week;
+-  $links['prev'] = l(t('Previous Week'), $backward_path);
++  $nav['links']['prev'] = l(t('Previous Week'), $backward_path);
+ 
+   $current_path = STUDYROOM_SPACE_PATH . $space->space_id . '/' . $current->format('Y/W');
+-  $links['current'] = l(t('Current Week'), $current_path);
++  $nav['links']['current'] = l(t('Current Week'), $current_path);
+ 
+-  $variables['page']['navigation'] = studyroom_availability_week_navigation($links);
++  $variables['page']['navigation'] = theme('studyroom_availability_week_navigation', $nav);
+   $variables['week_days'] = $availability->week_days;
+ }
+ 
+ /**
+  * Generate the navigation for the availability week table.
+  */
+-function studyroom_availability_week_navigation($links) {
++function theme_studyroom_availability_week_navigation($content) {
+   $nav = array();
+   $nav['#prefix'] = '<div class="navigation">';
+   $nav['#suffix'] = '</div>';
+ 
+-  foreach ($links as $key => $link) {
++  foreach ($content['links'] as $key => $link) {
+     $nav[$key]['#type'] = 'markup';
+     $nav[$key]['#markup'] = $link;
+     $nav[$key]['#prefix'] = '<span class="' . $key . '-url">';
+@@ -92,3 +92,12 @@ function studyroom_availability_week_navigation($links) {
+ 
+   return $nav;
+ }
++
++/**
++ * Theme output of studyroom_availability_results.
++ */
++function template_preprocess_studyroom_availability_results(&$variables) {
++  $variables['login_notification_message'] = t('You must !login to make a reservation.',
++    array('!login' => l('Sign in', 'user/login', array('query' => drupal_get_destination()))));
++  $variables['login_notification_message_type'] = 'status';
++}
+diff --git a/modules/studyroom_closed/studyroom_closed.info b/modules/studyroom_closed/studyroom_closed.info
+index 6192fcb..fc015f5 100644
+--- a/modules/studyroom_closed/studyroom_closed.info
++++ b/modules/studyroom_closed/studyroom_closed.info
+@@ -15,7 +15,7 @@ files[] = views/studyroom_closed_handler_operations_field.inc
+ files[] = views/studyroom_closed_handler_spaces_field.inc
+ files[] = views/studyroom_closed_handler_conflict_field.inc
+ 
+-configure = admin/studyroom/reservation/closed
++configure = admin/content/studyroom/reservations/closed
+ 
+ ; Information added by Drupal.org packaging script on 2014-06-24
+ version = "7.x-1.2"
+diff --git a/modules/studyroom_closed/studyroom_closed.module b/modules/studyroom_closed/studyroom_closed.module
+index ff436ae..2a7de3c 100644
+--- a/modules/studyroom_closed/studyroom_closed.module
++++ b/modules/studyroom_closed/studyroom_closed.module
+@@ -4,7 +4,7 @@
+  * Module for the System Reservation Entity
+  */
+ 
+-define('STUDYROOM_CLOSED_MENU_ADMIN_SPACE', 'admin/studyroom/closed');
++define('STUDYROOM_CLOSED_MENU_ADMIN_SPACE', STUDYROOM_MENU_CONTENT_ADMIN_PATH . '/reservations/closed');
+ 
+ /**
+  * Implements hook_entity_info().
+@@ -139,7 +139,7 @@ function studyroom_closed_save(StudyroomClosed $studyroom_closed) {
+  * Implements hook_menu_local_tasks_alter().
+  */
+ function studyroom_closed_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+-  // Add action link 'admin/studyroom/closed/add' on 'admin/studyroom/closed'.
++  // Add action link 'admin/content/studyroom/closed/add' on 'admin/content/studyroom/closed'.
+   if ($root_path == STUDYROOM_CLOSED_MENU_ADMIN_SPACE) {
+     $item = menu_get_item(STUDYROOM_CLOSED_MENU_ADMIN_SPACE . '/add');
+     if ($item['access']) {
+diff --git a/modules/studyroom_closed/views/studyroom_closed.views.inc b/modules/studyroom_closed/views/studyroom_closed.views.inc
+index 807dc43..70ab37e 100644
+--- a/modules/studyroom_closed/views/studyroom_closed.views.inc
++++ b/modules/studyroom_closed/views/studyroom_closed.views.inc
+@@ -26,7 +26,7 @@ function studyroom_closed_views_data_alter(&$data) {
+   );
+   $data['studyroom_closed']['operations'] = array(
+     'field' => array(
+-      'title' => t('Operations links'),
++      'title' => t('Operations'),
+       'help' => t('Display all operations available for this studyroom_closed.'),
+       'handler' => 'studyroom_closed_handler_operations_field',
+     ),
+diff --git a/modules/studyroom_closed/views/studyroom_closed.views_default.inc b/modules/studyroom_closed/views/studyroom_closed.views_default.inc
+index ac38aaf..8f9869e 100644
+--- a/modules/studyroom_closed/views/studyroom_closed.views_default.inc
++++ b/modules/studyroom_closed/views/studyroom_closed.views_default.inc
+@@ -10,11 +10,11 @@
+  */
+ function studyroom_closed_views_default_views() {
+   $view = new view();
+-  $view->name = 'Closed reservations';
++  $view->name = 'studyroom_closed_reservations';
+   $view->description = 'A list of all closed reservations';
+   $view->tag = 'studyroom';
+   $view->base_table = 'studyroom_closed';
+-  $view->human_name = 'Closed reservations';
++  $view->human_name = 'Studyroom Closed Reservations';
+   $view->core = 7;
+   $view->api_version = '3.0';
+   $view->disabled = FALSE; /* Edit this to true to make a default view disabled initially */
+@@ -166,7 +166,7 @@ function studyroom_closed_views_default_views() {
+   /* Display: Page */
+   $handler = $view->new_display('page', 'Page', 'studyroom_closeds_admin_page');
+   $handler->display->display_options['defaults']['hide_admin_links'] = FALSE;
+-  $handler->display->display_options['path'] = 'admin/studyroom/closed';
++  $handler->display->display_options['path'] = STUDYROOM_CLOSED_MENU_ADMIN_SPACE;
+   $handler->display->display_options['menu']['type'] = 'normal';
+   $handler->display->display_options['menu']['title'] = 'Closed Reservations';
+   $handler->display->display_options['menu']['description'] = 'Add, edit and delete closed reservations.';
+@@ -174,7 +174,7 @@ function studyroom_closed_views_default_views() {
+   $handler->display->display_options['menu']['name'] = 'management';
+   $handler->display->display_options['menu']['context'] = 0;
+   $handler->display->display_options['tab_options']['type'] = 'tab';
+-  $handler->display->display_options['tab_options']['title'] = 'Closed Reservations';
++  $handler->display->display_options['tab_options']['title'] = 'Studyroom Closed Reservations';
+   $handler->display->display_options['tab_options']['description'] = 'Manage closed reservations';
+   $handler->display->display_options['tab_options']['weight'] = '0';
+   $handler->display->display_options['tab_options']['name'] = 'management';
+diff --git a/modules/studyroom_devel_generate/devel_generate.inc b/modules/studyroom_devel_generate/devel_generate.inc
+index 1636653..bfb8a3d 100644
+--- a/modules/studyroom_devel_generate/devel_generate.inc
++++ b/modules/studyroom_devel_generate/devel_generate.inc
+@@ -241,7 +241,7 @@ function studyroom_devel_generate_reservations_add_reservation(&$results) {
+ function _studyroom_devel_generate_check_date($space, &$date, $time_range, $increment) {
+   $valid_hours = $space->hoursPerDate($date);
+ 
+-  if ($valid_hours['empty'] == 1) {
++  if ($valid_hours === FALSE) {
+     $seconds = mt_rand(3600, $time_range);
+     date_modify($date, "+{$seconds} seconds");
+     date_increment_round($date, $increment);
+diff --git a/modules/studyroom_hours/studyroom_hours.module b/modules/studyroom_hours/studyroom_hours.module
+index f18d0ac..ce4bb2a 100644
+--- a/modules/studyroom_hours/studyroom_hours.module
++++ b/modules/studyroom_hours/studyroom_hours.module
+@@ -255,25 +255,20 @@ function studyroom_hours_mil_to_ampm($time) {
+ /**
+  * API Type functions.
+  *
+- * Return the weekday hours date object or empty object.
++ * Return the weekday hours date object or FALSE. Since the return types are mixed,
++ * be sure to use the strict comparison operators (e.g., ===).
+  */
+ function studyroom_hours_day_hours($field, $week_day = 0, $date = NULL, $language = NULL) {
+   $week = (isset($language)) ? $field[$language] : array_shift($field);
+   $date_part = (isset($date) && is_object($date)) ? $date->format('Y-m-d') . ' ' : '';
+ 
+   if (isset($week[$week_day]) && isset($week[$week_day]['start_time'])) {
+-    $start_time = new DateObject($date_part . $week[$week_day]['start_time']);
+-    $end_time = new DateObject($date_part . $week[$week_day]['end_time']);
+-    $empty = FALSE;
++    return array(
++      new DateObject($date_part . $week[$week_day]['start_time']),
++      new DateObject($date_part . $week[$week_day]['end_time']),
++    );
+   }
+   else {
+-    $start_time = $end_time = new DateObject($date_part . '00:00:00');
+-    $empty = TRUE;
++    return FALSE;
+   }
+-
+-  return array(
+-    'start_time' => $start_time,
+-    'end_time' => $end_time,
+-    'empty' => $empty,
+-  );
+ }
+diff --git a/modules/studyroom_reservation/studyroom_reservation.inc b/modules/studyroom_reservation/studyroom_reservation.inc
+index b21c88a..f99a6a1 100644
+--- a/modules/studyroom_reservation/studyroom_reservation.inc
++++ b/modules/studyroom_reservation/studyroom_reservation.inc
+@@ -162,7 +162,7 @@ class StudyroomReservationType extends Entity {
+    * @return array
+    *   array of options formated for use in select form element
+    */
+-  public function optionsMinDuartion() {
++  public function optionsMinDuration() {
+     return drupal_map_assoc(array(0, 900, 1800, 3600, 7200, 10800, 14400), 'format_interval');
+   }
+ 
+@@ -172,7 +172,7 @@ class StudyroomReservationType extends Entity {
+    * @return array
+    *   array of options formated for use in select form element
+    */
+-  public function optionsMaxDuartion() {
++  public function optionsMaxDuration() {
+     $values = array(
+       0, 900, 1800, 3600, 7200, 10800, 14400, 21600, 32400, 43200, 64800, 86400);
+     return drupal_map_assoc($values, 'format_interval');
+diff --git a/modules/studyroom_reservation/studyroom_reservation.info b/modules/studyroom_reservation/studyroom_reservation.info
+index 7845bdc..c422de3 100644
+--- a/modules/studyroom_reservation/studyroom_reservation.info
++++ b/modules/studyroom_reservation/studyroom_reservation.info
+@@ -20,7 +20,7 @@ files[] = views/studyroom_reservation_handler_field_space.inc
+ files[] = views/studyroom_reservation_handler_field_type.inc
+ files[] = views/studyroom_reservation_handler_filter_type.inc
+ 
+-configure = admin/studyroom/reservation/
++configure = admin/content/studyroom/reservations/
+ 
+ ; Information added by Drupal.org packaging script on 2014-06-24
+ version = "7.x-1.2"
+diff --git a/modules/studyroom_reservation/studyroom_reservation.install b/modules/studyroom_reservation/studyroom_reservation.install
+index 0933f11..4faadd9 100644
+--- a/modules/studyroom_reservation/studyroom_reservation.install
++++ b/modules/studyroom_reservation/studyroom_reservation.install
+@@ -46,8 +46,11 @@ function studyroom_reservation_uninstall() {
+   // Delete field_reservation_datetime field.
+   field_delete_field('field_reservation_datetime');
+ 
++  // Delete the field_reservation_occupancy
++  field_delete_field('field_reservation_occupancy');
++
+   // Delete all other attached fields.
+-  $types = array_keys(studyroom_reservation_types());
++  $types = db_query("SELECT type FROM {studyroom_reservation}")->fetchCol();
+   foreach ($types as $type) {
+     field_attach_delete_bundle('studyroom_reservation', $type);
+   }
+diff --git a/modules/studyroom_reservation/studyroom_reservation.module b/modules/studyroom_reservation/studyroom_reservation.module
+index b4d2902..3ed55a9 100644
+--- a/modules/studyroom_reservation/studyroom_reservation.module
++++ b/modules/studyroom_reservation/studyroom_reservation.module
+@@ -5,9 +5,9 @@
+  * Module for the studyroom_reservation.
+  */
+ 
+-define('STUDYROOM_RESERVATION_ADMIN_PATH', 'admin/content/reservation');
+-define('STUDYROOM_RESERVATION_TYPE_ADMIN_PATH', STUDYROOM_MENU . '/reservation/type');
+-define('STUDYROOM_RESERVATION_PATH', 'reservation/');
++define('STUDYROOM_RESERVATION_ADMIN_PATH', STUDYROOM_MENU_CONTENT_ADMIN_PATH . '/reservations');
++define('STUDYROOM_RESERVATION_TYPE_ADMIN_PATH', STUDYROOM_MENU_STRUCTURE_ADMIN_PATH . '/reservation-types');
++define('STUDYROOM_RESERVATION_PATH', 'studyroom/reservations/');
+ 
+ /**
+  * Implements hook_entity_info().
+diff --git a/modules/studyroom_reservation/studyroom_reservation_type.admin.inc b/modules/studyroom_reservation/studyroom_reservation_type.admin.inc
+index 4a26015..a0a4b66 100644
+--- a/modules/studyroom_reservation/studyroom_reservation_type.admin.inc
++++ b/modules/studyroom_reservation/studyroom_reservation_type.admin.inc
+@@ -326,7 +326,7 @@ function studyroom_reservation_type_form($form, &$form_state, $type, $op = 'edit
+   $form['min_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Minimum duration'),
+-    '#options' => $type->optionsMinDuartion(),
++    '#options' => $type->optionsMinDuration(),
+     '#default_value' => isset($type->min_duration) ? $type->min_duration : $type->defaultMinDuration(),
+     '#description' => t('The minimum length of time of a reservation.'),
+     '#access' => $type->public,
+@@ -334,7 +334,7 @@ function studyroom_reservation_type_form($form, &$form_state, $type, $op = 'edit
+   $form['max_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Maximum duration'),
+-    '#options' => $type->optionsMaxDuartion(),
++    '#options' => $type->optionsMaxDuration(),
+     '#default_value' => isset($type->max_duration) ? $type->max_duration : $type->defaultMaxDuration(),
+     '#description' => t('The maximum length of time of a reservation.'),
+     '#access' => $type->public,
+diff --git a/modules/studyroom_reservation/views/studyroom_reservation.views.inc b/modules/studyroom_reservation/views/studyroom_reservation.views.inc
+index f1b9b06..a6591d7 100644
+--- a/modules/studyroom_reservation/views/studyroom_reservation.views.inc
++++ b/modules/studyroom_reservation/views/studyroom_reservation.views.inc
+@@ -226,7 +226,7 @@ function studyroom_reservation_views_data_alter(&$data) {
+   );
+   $data['studyroom_reservation']['operations'] = array(
+     'field' => array(
+-      'title' => t('Operations links'),
++      'title' => t('Operations'),
+       'help' => t('Display all operations available for this studyroom reservation.'),
+       'handler' => 'studyroom_reservation_handler_field_operations',
+     ),
+diff --git a/modules/studyroom_reservation/views/studyroom_reservation.views_default.inc b/modules/studyroom_reservation/views/studyroom_reservation.views_default.inc
+index 88880d9..721c83b 100644
+--- a/modules/studyroom_reservation/views/studyroom_reservation.views_default.inc
++++ b/modules/studyroom_reservation/views/studyroom_reservation.views_default.inc
+@@ -173,7 +173,7 @@ function studyroom_reservation_views_default_views() {
+   $handler->display->display_options['menu']['title'] = 'List';
+   $handler->display->display_options['menu']['weight'] = '-10';
+   $handler->display->display_options['tab_options']['type'] = 'tab';
+-  $handler->display->display_options['tab_options']['title'] = 'Reservations';
++  $handler->display->display_options['tab_options']['title'] = 'All Reservations';
+   $handler->display->display_options['tab_options']['description'] = 'Manage reservations';
+   $handler->display->display_options['tab_options']['weight'] = '0';
+   $handler->display->display_options['tab_options']['name'] = 'management';
+diff --git a/modules/studyroom_space/studyroom_space.admin.inc b/modules/studyroom_space/studyroom_space.admin.inc
+index efa0e8b..7ea40f5 100644
+--- a/modules/studyroom_space/studyroom_space.admin.inc
++++ b/modules/studyroom_space/studyroom_space.admin.inc
+@@ -22,7 +22,7 @@ class StudyroomSpaceUIController extends EntityDefaultUIController {
+     );
+ 
+     $items[$this->path] = array(
+-      'title' => 'Space',
++      'title' => 'Spaces',
+       'description' => 'Add, edit and update spaces.',
+       'page callback' => 'system_admin_menu_block_page',
+       'access arguments' => array('access administration pages'),
+@@ -49,32 +49,32 @@ class StudyroomSpaceUIController extends EntityDefaultUIController {
+     ) + $defaults;
+     $items[STUDYROOM_SPACE_PATH . $wildcard] = array(
+       'title callback' => 'entity_ui_get_page_title',
+-      'title arguments' => array('view', $this->entityType, 1),
++      'title arguments' => array('view', $this->entityType, 4),
+       'page callback' => 'entity_ui_entity_page_view',
+-      'page arguments' => array(1),
++      'page arguments' => array(4),
+       'load arguments' => array($this->entityType),
+       'access callback' => 'entity_access',
+-      'access arguments' => array('view', $this->entityType, 1),
++      'access arguments' => array('view', $this->entityType, 4),
+     );
+     $items[STUDYROOM_SPACE_PATH . $wildcard . '/view'] = array(
+-      'title' => 'View',
++      'title' => 'view',
+       'type' => MENU_DEFAULT_LOCAL_TASK,
+       'load arguments' => array($this->entityType),
+       'weight' => -10,
+     );
+     $items[STUDYROOM_SPACE_PATH . $wildcard . '/edit'] = array(
+-      'title' => 'Edit',
++      'title' => 'edit',
+       'page callback' => 'studyroom_space_form_wrapper',
+-      'page arguments' => array(1),
++      'page arguments' => array(4),
+       'access callback' => 'entity_access',
+       'access arguments' => array('edit', $this->entityType),
+       'type' => MENU_LOCAL_TASK,
+       'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+     ) + $defaults;
+     $items[STUDYROOM_SPACE_PATH . $wildcard . '/delete'] = array(
+-      'title' => 'Delete',
++      'title' => 'delete',
+       'page callback' => 'studyroom_space_delete_form_wrapper',
+-      'page arguments' => array(1),
++      'page arguments' => array(4),
+       'access callback' => 'entity_access',
+       'access arguments' => array('delete', $this->entityType),
+       'type' => MENU_LOCAL_TASK,
+@@ -82,8 +82,8 @@ class StudyroomSpaceUIController extends EntityDefaultUIController {
+       'weight' => 10,
+     ) + $defaults;
+ 
+-    $items['admin/config/studyroom/space'] = array(
+-      'title' => 'Space',
++    $items['admin/config/studyroom/spaces'] = array(
++      'title' => 'Spaces',
+       'page callback' => 'drupal_get_form',
+       'page arguments' => array('studyroom_space_settings_form'),
+       'access arguments' => array('administer studyroom_space locations'),
+@@ -201,29 +201,30 @@ function studyroom_space_form($form, &$form_state, $entity) {
+   $form['rules']['min_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Set minimum duration'),
+-    '#default_value' => isset($entity->min_duration) ? $entity->min_duration : '',
+-    '#options' => $studyroom->optionsMinDuartion(),
+-    '#description' => t("Override the minimum duration for a reservation for this space.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => format_interval($studyroom->getMinDuration($entity)))),
++    '#default_value' => isset($entity->min_duration) ? $entity->min_duration : $studyroom->getMinDuration($entity),
++    '#options' => $studyroom->optionsMinDuration(),
++    '#description' => t("Override the global minimum duration of a reservation for this location."),
+   );
+   $form['rules']['max_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Set maximum duration'),
+-    '#default_value' => isset($entity->max_duration) ? $entity->max_duration : '',
+-    '#options' => $studyroom->optionsMaxDuartion(),
+-    '#description' => t("Override the maximum duration for a reservation for this space.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => format_interval($studyroom->getMaxDuration($entity)))),
++    '#default_value' => isset($entity->max_duration) ? $entity->max_duration : $studyroom->getMaxDuration($entity),
++    '#options' => $studyroom->optionsMaxDuration(),
++    '#description' => t("Override the global maximum duration of a reservation for this location."),
+   );
+   $form['rules']['max_days_advance'] = array(
+     '#type' => 'select',
+     '#title' => t('Set maximum days in advance'),
+-    '#default_value' => isset($entity->max_days_advance) ? $entity->max_days_advance : '',
++    '#default_value' => isset($entity->max_days_advance) ? $entity->max_days_advance : $studyroom->getMaxDaysAdvance($entity),
+     '#options' => $studyroom->optionsMaxDayAdvance(),
+-    '#description' => t("Override the maximum days in advance a reservation can be made for this space.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => studyroom_format_day($studyroom->getMaxDaysAdvance()))),
++    '#description' => t("Override the global maximum days in advance a reservation can be made for this location."),
++  );
++  $form['rules']['max_times_per_week'] = array(
++    '#type' => 'select',
++    '#title' => t('Set maximum reservations per week'),
++    '#default_value' => isset($entity->max_times_per_week) ? $entity->max_times_per_week : $studyroom->getMaxTimesPerWeek($entity),
++    '#options' => $studyroom->optionsMaxTimesPerWeek(),
++    '#description' => t("Override the global maximum reservations per week for this location."),
+   );
+ 
+   // We add the form's #submit array to this button along with the actual submit
+@@ -262,7 +263,6 @@ function studyroom_space_form($form, &$form_state, $entity) {
+   return $form;
+ }
+ 
+-
+ /**
+  * Form API validate callback for the studyroom_space form.
+  */
+@@ -277,6 +277,10 @@ function studyroom_space_form_validate(&$form, &$form_state) {
+     form_set_value($form['rules']['max_days_advance'], NULL, $form_state);
+   }
+ 
++  if (empty($values['max_times_per_week'])) {
++    form_set_value($form['rules']['max_times_per_week'], NULL, $form_state);
++  }
++
+   // Notify field widgets to validate their data.
+   field_attach_form_validate('studyroom_space', $entity, $form, $form_state);
+ }
+diff --git a/modules/studyroom_space/studyroom_space.inc b/modules/studyroom_space/studyroom_space.inc
+index e84ae46..8465760 100644
+--- a/modules/studyroom_space/studyroom_space.inc
++++ b/modules/studyroom_space/studyroom_space.inc
+@@ -41,8 +41,16 @@ class StudyroomSpace extends Entity {
+    * Return the hours per specific date.
+    */
+   public function hoursPerDate($date) {
+-    $week_day = date_day_of_week($date);
+-    return studyroom_hours_day_hours($this->field_space_hours, $week_day, $date, $this->language);
++    $modules = module_implements('studyroom_space_hours');
++    if (!empty($modules)) {
++      if (count($modules) > 1) {
++        watchdog(t('studyroom_space'), t('Multiple implementations of hook_studyroom_space_hours were found; only 0 or 1 implementations are supported.'), WATCHDOG_EMERGENCY);
++        drupal_exit();
++      }
++      return module_invoke(array_shift($modules), 'studyroom_space_hours', $this, $date);
++    } else {
++      return studyroom_hours_day_hours($this->field_space_hours, $week_day, $date, $this->language);
++    }
+   }
+ 
+   /**
+diff --git a/modules/studyroom_space/studyroom_space.info b/modules/studyroom_space/studyroom_space.info
+index a23ce76..fc48ce9 100644
+--- a/modules/studyroom_space/studyroom_space.info
++++ b/modules/studyroom_space/studyroom_space.info
+@@ -8,7 +8,6 @@ dependencies[] = taxonomy
+ 
+ ; studyroom
+ dependencies[] = studyroom
+-dependencies[] = studyroom_hours
+ 
+ files[] = studyroom_space.inc
+ files[] = studyroom_space.admin.inc
+@@ -21,7 +20,7 @@ files[] = views/studyroom_space_handler_field_type.inc
+ files[] = views/studyroom_space_handler_field_max_days_advance.inc
+ files[] = views/studyroom_space_handler_filter_type.inc
+ 
+-configure = admin/studyroom/locations
++configure = admin/structure/studyroom/locations
+ 
+ ; Information added by Drupal.org packaging script on 2014-06-24
+ version = "7.x-1.2"
+diff --git a/modules/studyroom_space/studyroom_space.info.inc b/modules/studyroom_space/studyroom_space.info.inc
+index 1d074ec..4a8e16d 100644
+--- a/modules/studyroom_space/studyroom_space.info.inc
++++ b/modules/studyroom_space/studyroom_space.info.inc
+@@ -81,6 +81,14 @@ function studyroom_space_entity_property_info() {
+     'schema field' => 'max_days_advance',
+     'visible' => FALSE,
+   );
++  $properties['max_times_per_week'] = array(
++    'label' => t('Maximum reservations per week'),
++    'description' => t('The maximum number of reservations per week per user.'),
++    'type' => 'integer',
++    'getter callback' => 'studyroom_space_get_property',
++    'schema field' => 'max_times_per_week',
++    'visible' => FALSE,
++  );
+   $properties['created'] = array(
+     'label' => t('Date created'),
+     'description' => t('The date the space was created.'),
+diff --git a/modules/studyroom_space/studyroom_space.install b/modules/studyroom_space/studyroom_space.install
+index 8559b0f..81a1cc3 100644
+--- a/modules/studyroom_space/studyroom_space.install
++++ b/modules/studyroom_space/studyroom_space.install
+@@ -9,22 +9,6 @@
+  */
+ function studyroom_space_install() {
+   studyroom_space_create_category_vocabulary();
+-
+-  // Create default location.
+-  $values = array(
+-    'type' => 'main',
+-    'label' => 'Main',
+-    'description' => 'Main location for studyroom.',
+-    'min_duration' => NULL,
+-    'max_duration' => NULL,
+-    'max_days_advance' => NULL,
+-    'max_times_per_week' => 0,
+-    'allowed_reservation_types' => array('user' => 'user', 'admin' => TRUE),
+-    'module' => 'studyroom_space',
+-  );
+-  $type = studyroom_space_location_create($values);
+-  $type->save();
+-
+   menu_rebuild();
+ }
+ 
+@@ -104,6 +88,12 @@ function studyroom_space_schema() {
+         'not null' => FALSE,
+         'description' => 'The maximum number of days in advance to allow a reservation for this space.',
+       ),
++      'max_times_per_week' => array(
++        'type' => 'int',
++        'not null' => TRUE,
++        'default' => 0,
++        'description' => 'The maximum number of reservation per week for this space.',
++      ),
+       'language' => array(
+         'type' => 'varchar',
+         'length' => 32,
+@@ -312,3 +302,16 @@ function studyroom_space_update_7003() {
+   // Remove old description column.
+   db_drop_field('studyroom_space', 'description');
+ }
++
++/**
++ * Add max_times_per_week column to {studyroom_space}.
++ */
++function studyroom_space_update_7004() {
++  $spec = array(
++    'type' => 'int',
++    'not null' => TRUE,
++    'default' => 0,
++    'description' => 'The maximum number of reservation per week for this space.',
++  );
++  db_add_field('studyroom_space', 'max_times_per_week', $spec);
++}
+diff --git a/modules/studyroom_space/studyroom_space.module b/modules/studyroom_space/studyroom_space.module
+index 92c71e2..eaa92d8 100644
+--- a/modules/studyroom_space/studyroom_space.module
++++ b/modules/studyroom_space/studyroom_space.module
+@@ -5,9 +5,9 @@
+  * Module for the studyroom_space.
+  */
+ 
+-define('STUDYROOM_SPACE_MENU_SPACE', STUDYROOM_MENU . '/space');
+-define('STUDYROOM_SPACE_MENU_LOCATION', STUDYROOM_MENU . '/locations');
+-define('STUDYROOM_SPACE_PATH', 'space/');
++define('STUDYROOM_SPACE_MENU_SPACE', STUDYROOM_MENU_STRUCTURE_ADMIN_PATH . '/spaces');
++define('STUDYROOM_SPACE_MENU_LOCATION', STUDYROOM_MENU_STRUCTURE_ADMIN_PATH . '/locations');
++define('STUDYROOM_SPACE_PATH', STUDYROOM_SPACE_MENU_SPACE . '/');
+ 
+ /**
+  * Implements hook_entity_info().
+@@ -452,6 +452,9 @@ function studyroom_space_get_property($data, array $options, $name, $type, $info
+ 
+       case 'max_days_advance':
+         return studyroom_format_day($data->max_days_advance);
++
++      case 'max_times_per_week':
++        return $data->max_times_per_week;
+     }
+   }
+   return NULL;
+@@ -531,7 +534,9 @@ function studyroom_space_configure_location($type = NULL) {
+   studyroom_space_create_category($type);
+ 
+   // Add room hours field.
+-  studyroom_space_create_hours($type);
++  if (module_exists('studyroom_hours')) {
++    studyroom_space_create_hours($type);
++  }
+ 
+   // Add space body field.
+   studyroom_space_add_body_field($type);
+diff --git a/modules/studyroom_space/studyroom_space_location.admin.inc b/modules/studyroom_space/studyroom_space_location.admin.inc
+index b2944ed..adc5545 100644
+--- a/modules/studyroom_space/studyroom_space_location.admin.inc
++++ b/modules/studyroom_space/studyroom_space_location.admin.inc
+@@ -122,44 +122,30 @@ function studyroom_space_location_form($form, &$form_state, $entity, $op = 'edit
+   $form['rules']['min_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Set minimum duration'),
+-    '#default_value' => isset($entity->min_duration) ? $entity->min_duration : '',
+-    '#options' => $studyroom->optionsMinDuartion(),
+-    '#description' => t("Override the minimum duration for a reservation for this location.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => format_interval($studyroom->getMinDuration()))),
++    '#default_value' => isset($entity->min_duration) ? $entity->min_duration : $studyroom->getMinDuration($entity),
++    '#options' => $studyroom->optionsMinDuration(),
++    '#description' => t("Override the global minimum duration of a reservation for this location."),
+   );
+   $form['rules']['max_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Set maximum duration'),
+-    '#default_value' => isset($entity->max_duration) ? $entity->max_duration : '',
+-    '#options' => $studyroom->optionsMaxDuartion(),
+-    '#description' => t("Override the maximum duration for a reservation for this location.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => format_interval($studyroom->getMaxDuration()))),
++    '#default_value' => isset($entity->max_duration) ? $entity->max_duration : $studyroom->getMaxDuration($entity),
++    '#options' => $studyroom->optionsMaxDuration(),
++    '#description' => t("Override the global maximum duration of a reservation for this location."),
+   );
+   $form['rules']['max_days_advance'] = array(
+     '#type' => 'select',
+     '#title' => t('Set maximum days in advance'),
+-    '#default_value' => isset($entity->max_days_advance) ? $entity->max_days_advance : '',
++    '#default_value' => isset($entity->max_days_advance) ? $entity->max_days_advance : $studyroom->getMaxDaysAdvance($entity),
+     '#options' => $studyroom->optionsMaxDayAdvance(),
+-    '#description' => t("Override the maximum days in advance a reservation can be made for this location.
+-      If no value is specified, the value of %value will be used.", array(
+-        '%value' => studyroom_format_day($studyroom->getMaxDaysAdvance()))),
++    '#description' => t("Override the global maximum days in advance a reservation can be made for this location."),
+   );
+-  $form['rules_space'] = array(
+-    '#type' => 'fieldset',
+-    '#title' => t('Rules'),
+-    '#tree' => FALSE,
+-    '#collapsible' => FALSE,
+-    '#collapsed' => FALSE,
+-    '#group' => 'additional_settings',
+-  );
+-  $form['rules_space']['max_times_per_week'] = array(
++  $form['rules']['max_times_per_week'] = array(
+     '#type' => 'select',
+-    '#title' => t('Maximum reservations per week'),
+-    '#default_value' => isset($entity->max_times_per_week) ? $entity->max_times_per_week : '',
+-    '#options' => array(0 => '- None -', 1, 2, 3, 4),
+-    '#description' => t("The maximum reservations that a user can make per week (Sun-Sat). 'None' means no limit."),
++    '#title' => t('Set maximum reservations per week'),
++    '#default_value' => isset($entity->max_times_per_week) ? $entity->max_times_per_week : $studyroom->getMaxTimesPerWeek($entity),
++    '#options' => $studyroom->optionsMaxTimesPerWeek(),
++    '#description' => t("Override the global maximum reservations per week for this location."),
+   );
+ 
+   $form_state['studyroom_space_location'] = $entity;
+@@ -212,8 +198,11 @@ function studyroom_space_location_form_validate($form, &$form_state) {
+   if (empty($values['max_days_advance'])) {
+     form_set_value($form['rules']['max_days_advance'], NULL, $form_state);
+   }
+-}
+ 
++  if (empty($values['max_times_per_week'])) {
++    form_set_value($form['rules']['max_times_per_week'], NULL, $form_state);
++  }
++}
+ 
+ /**
+  * Form API submit callback for the location form.
+@@ -226,13 +215,18 @@ function studyroom_space_location_form_submit(&$form, &$form_state) {
+   $entity->save();
+ 
+   if ($new) {
+-    drupal_set_message(t('Please configure the default hours for each space in this location.'));
+-    $form_state['redirect'] = STUDYROOM_SPACE_MENU_LOCATION . '/manage/' . $entity->type . '/fields/field_space_hours';
++    // field_space_hours is defined in the optional studyroom_hours sub-module. It is optional because
++    // one can specify the hours for a given location and space by implementing the hook_studyroom_space_hours hook.
++    if (module_exists('studyroom_hours')) {
++      drupal_set_message(t('Please configure the default hours for each space in this location.'));
++      $form_state['redirect'] = STUDYROOM_SPACE_MENU_LOCATION . '/manage/' . $entity->type . '/fields/field_space_hours';
++    } else {
++      $form_state['redirect'] = STUDYROOM_SPACE_MENU_LOCATION;
++    }
+   }
+   else {
+     $form_state['redirect'] = STUDYROOM_SPACE_MENU_LOCATION;
+   }
+-
+ }
+ 
+ /**
+diff --git a/modules/studyroom_space/views/studyroom_space.views.inc b/modules/studyroom_space/views/studyroom_space.views.inc
+index a8d070a..9a87f8d 100644
+--- a/modules/studyroom_space/views/studyroom_space.views.inc
++++ b/modules/studyroom_space/views/studyroom_space.views.inc
+@@ -31,10 +31,10 @@ function studyroom_space_views_data_alter(&$data) {
+     ),
+   );
+   // This content of this field are decided based on the menu structure that
+-  // follows admin/structure/space/%space_id/op
++  // follows admin/structure/spaces/%space_id/op
+   $data['studyroom_space']['operations'] = array(
+     'field' => array(
+-      'title' => t('Operations links'),
++      'title' => t('Operations'),
+       'help' => t('Display all operations available for this studyroom_space.'),
+       'handler' => 'studyroom_space_handler_field_operations',
+     ),
+@@ -85,4 +85,11 @@ function studyroom_space_views_data_alter(&$data) {
+       'handler' => 'studyroom_space_handler_field_max_days_advance',
+     ),
+   );
++  $data['studyroom_space']['max_times_per_week'] = array(
++    'field' => array(
++      'title' => t('Maximum reservations per week'),
++      'help' => t('The maximum number of reservations per user per week.'),
++      'handler' => 'views_handler_field_numeric',
++    ),
++  );
+ }
+diff --git a/modules/studyroom_space/views/studyroom_space.views_default.inc b/modules/studyroom_space/views/studyroom_space.views_default.inc
+index fd846ce..fd0ca3a 100644
+--- a/modules/studyroom_space/views/studyroom_space.views_default.inc
++++ b/modules/studyroom_space/views/studyroom_space.views_default.inc
+@@ -10,7 +10,7 @@
+  */
+ function studyroom_space_views_default_views() {
+   $view = new view();
+-  $view->name = 'spaces';
++  $view->name = 'studyroom_space_list';
+   $view->description = 'A list of all spaces';
+   $view->tag = 'studyroom, spaces';
+   $view->base_table = 'studyroom_space';
+@@ -32,7 +32,6 @@ function studyroom_space_views_default_views() {
+   $handler->display->display_options['pager']['options']['items_per_page'] = '25';
+   $handler->display->display_options['style_plugin'] = 'table';
+   $handler->display->display_options['style_options']['columns'] = array(
+-    'space_id' => 'space_id',
+     'label' => 'label',
+     'type' => 'type',
+     'type' => 'type',
+@@ -41,13 +40,6 @@ function studyroom_space_views_default_views() {
+   );
+   $handler->display->display_options['style_options']['default'] = '-1';
+   $handler->display->display_options['style_options']['info'] = array(
+-    'space_id' => array(
+-      'sortable' => 0,
+-      'default_sort_order' => 'asc',
+-      'align' => '',
+-      'separator' => '',
+-      'empty_column' => 0,
+-    ),
+     'label' => array(
+       'sortable' => 1,
+       'default_sort_order' => 'asc',
+@@ -136,11 +128,6 @@ function studyroom_space_views_default_views() {
+       ),
+     );
+   }
+-  /* Field: Space: Space ID */
+-  $handler->display->display_options['fields']['space_id']['id'] = 'space_id';
+-  $handler->display->display_options['fields']['space_id']['table'] = 'studyroom_space';
+-  $handler->display->display_options['fields']['space_id']['field'] = 'space_id';
+-  $handler->display->display_options['fields']['space_id']['separator'] = '';
+   /* Field: Space: Space label */
+   $handler->display->display_options['fields']['label']['id'] = 'label';
+   $handler->display->display_options['fields']['label']['table'] = 'studyroom_space';
+diff --git a/modules/studyroom_space/views/studyroom_space_handler_field_operations.inc b/modules/studyroom_space/views/studyroom_space_handler_field_operations.inc
+index 9b25818..975d5e6 100644
+--- a/modules/studyroom_space/views/studyroom_space_handler_field_operations.inc
++++ b/modules/studyroom_space/views/studyroom_space_handler_field_operations.inc
+@@ -33,7 +33,7 @@ class studyroom_space_handler_field_operations extends views_handler_field {
+    * Render the field.
+    */
+   public function render($values) {
+-    $links = menu_contextual_links('studyroom_space', 'space', array($this->get_value($values, 'space_id')));
++    $links = menu_contextual_links('studyroom_space', STUDYROOM_SPACE_MENU_SPACE, array($this->get_value($values, 'space_id')));
+     $destination = drupal_get_destination();
+     if (!empty($links)) {
+       foreach ($links as &$link) {
+diff --git a/modules/studyroom_user/studyroom_user.module b/modules/studyroom_user/studyroom_user.module
+index c30e5ff..14d7be4 100644
+--- a/modules/studyroom_user/studyroom_user.module
++++ b/modules/studyroom_user/studyroom_user.module
+@@ -19,7 +19,7 @@ function studyroom_user_views_api() {
+  */
+ function studyroom_user_views_default_views() {
+   $view = new view();
+-  $view->name = 'user_reservations';
++  $view->name = 'studyroom_user_reservations';
+   $view->description = 'A table of all user reservation for the user, with basic information and edit/delete links.';
+   $view->tag = 'studyroom';
+   $view->base_table = 'studyroom_reservation';
+diff --git a/studyroom.api.php b/studyroom.api.php
+index 1edc508..93bf871 100644
+--- a/studyroom.api.php
++++ b/studyroom.api.php
+@@ -18,3 +18,25 @@ function hook_studyroom_time_increment_update($time_increment) {
+     field_update_instance($instance);
+   }
+ }
++
++/**
++ * Provides a method to retrieve the start and end time of a studyroom space.
++ *
++ * @param StudyroomSpace $space
++ *  StudyroomSpace object for which the hours are needed.
++ *
++ * @param DateObject $date
++ *  The date for which the hours are needed.
++ *
++ * @return array
++ *  start_time: DateObject representing the opening time of the space
++ *  end_time: DateObject representing the closing time of the space
++ *
++ *  Return FALSE (boolean) if a start and end time cannot be retrieved for the given study space and date
++ */
++function hook_studyroom_space_hours($space, $date) {
++  return array(
++    'start_time' => new DateObject('2015-07-14 08:00:00'),
++    'end_time' => new DateObject('2015-07-14 22:00:00'),
++  );
++}
+diff --git a/studyroom.inc b/studyroom.inc
+index 70b690f..7745ed9 100644
+--- a/studyroom.inc
++++ b/studyroom.inc
+@@ -136,6 +136,24 @@ class Studyroom {
+   }
+ 
+   /**
++   * Return the maximum reservations per week based on values set.
++   */
++  public function getMaxTimesPerWeek($entity = NULL, $resv_type = NULL) {
++    if (isset($entity->max_times_per_week)) {
++      return $entity->max_times_per_week;
++    }
++
++    if (isset($entity->type)) {
++      $entity_type = studyroom_space_location_load($entity->type);
++      if ($entity_type->max_times_per_week) {
++        return $entity_type->max_times_per_week;
++      }
++    }
++
++    return variable_get('studyroom_max_times_per_week', NULL);
++  }
++
++  /**
+    * Return default value for minimum duration.
+    */
+   public function defaultMinDuration() {
+@@ -157,12 +175,19 @@ class Studyroom {
+   }
+ 
+   /**
++   * Return default value for maximum reservations per week
++   */
++  public function defaultMaxTimesPerWeek() {
++    return 0;
++  }
++
++  /**
+    * Build array of options for minimum duration.
+    *
+    * @return array
+    *   array of options formated for use in select form element
+    */
+-  public function optionsMinDuartion($none = TRUE) {
++  public function optionsMinDuration($none = TRUE) {
+     $intervals = array(900, 1800, 3600, 7200, 10800, 14400);
+     if ($none) {
+       return array('' => '- None -') + drupal_map_assoc($intervals, 'format_interval');
+@@ -176,7 +201,7 @@ class Studyroom {
+    * @return array
+    *   array of options formated for use in select form element
+    */
+-  public function optionsMaxDuartion() {
++  public function optionsMaxDuration() {
+     $values = array(
+       3600, 7200, 10800, 14400, 21600, 32400, 43200, 64800, 86400);
+     return array('' => '- None -') + drupal_map_assoc($values, 'format_interval');
+@@ -194,6 +219,16 @@ class Studyroom {
+   }
+ 
+   /**
++   * Build array of options for maximum reservations per week
++   *
++   * @return array
++   *   array of options formated for use in select form element
++   */
++  public function optionsMaxTimesPerWeek() {
++    return array(0 => '- None -', 1, 2, 3, 4, 5, 6, 7, 14, 21, 30, 60, 90, 120, 180, 365);
++  }
++
++  /**
+    * Return an array of minutes.
+    */
+   public function durationMinutes() {
+diff --git a/studyroom.install b/studyroom.install
+index 2941039..6cac8e6 100644
+--- a/studyroom.install
++++ b/studyroom.install
+@@ -15,6 +15,15 @@ function studyroom_install() {
+   variable_set('studyroom_min_duration', $studyroom->defaultMinDuration());
+   variable_set('studyroom_max_duration', $studyroom->defaultMaxDuration());
+   variable_set('studyroom_max_days_advance', $studyroom->defaultMaxDayAdvance());
++  variable_set('studyroom_max_times_per_week', $studyroom->defaultMaxTimesPerWeek());
++}
++
++/**
++ * Add studyroom_max_times_per_week variable
++ */
++function studyroom_update_7001() {
++  $studyroom = new Studyroom();
++  variable_set('studyroom_max_times_per_week', $studyroom->defaultMaxTimesPerWeek());
+ }
+ 
+ /**
+@@ -27,4 +36,5 @@ function studyroom_uninstall() {
+   variable_del('studyroom_min_duration');
+   variable_del('studyroom_max_duration');
+   variable_del('studyroom_max_days_advance');
++  variable_del('studyroom_max_times_per_week');
+ }
+diff --git a/studyroom.module b/studyroom.module
+index 8dee78e..b0a29a4 100644
+--- a/studyroom.module
++++ b/studyroom.module
+@@ -5,7 +5,8 @@
+  * Main module for the studyroom system.
+  */
+ 
+-define('STUDYROOM_MENU', 'admin/studyroom');
++define('STUDYROOM_MENU_CONTENT_ADMIN_PATH', 'admin/content/studyroom');
++define('STUDYROOM_MENU_STRUCTURE_ADMIN_PATH', 'admin/structure/studyroom');
+ 
+ /**
+  * Implements hook_help().
+@@ -27,12 +28,12 @@ function studyroom_help($path, $arg) {
+ 
+       $output .= '<dl>';
+       $output .= '<dt><h4>' . t('Studyroom') . '</h4></dt>';
+-      $output .= '<dd>' . t('Rooms are used to create and manage locations and rooms.  These can be managed through the !url.', array('!url' => l(t('configuration page'), 'admin/studyroom/room'))) . '</dd>';
+-      $output .= '<dd>' . t('Reservation profiles are used to ...  These can be managed through the !url.', array('!url' => l(t('configuration page'), 'admin/studyroom/reservation')));
++      $output .= '<dd>' . t('Rooms are used to create and manage locations and rooms.  These can be managed through the !url.', array('!url' => l(t('configuration page'), 'admin/content/studyroom/room'))) . '</dd>';
++      $output .= '<dd>' . t('Reservation profiles are used to ...  These can be managed through the !url.', array('!url' => l(t('configuration page'), 'admin/content/studyroom/reservations')));
+       $output .= '</dl>';
+       return $output;
+ 
+-    case STUDYROOM_MENU:
++    case STUDYROOM_MENU_CONTENT_ADMIN_PATH:
+       return '<p>' . t('See !url for links to other configuration options.', array('!url' => l(t('system help'), 'admin/help/studyroom'))) . '</p>';
+ 
+   }
+@@ -69,16 +70,7 @@ function studyroom_permission() {
+  * Implements hook_menu().
+  */
+ function studyroom_menu() {
+-  // Top level "studyroom" container.
+-  $items[STUDYROOM_MENU] = array(
+-    'title' => 'Studyroom',
+-    'description' => 'Administer the studyroom system.',
+-    'page callback' => 'system_admin_menu_block_page',
+-    'access arguments' => array('access administration pages'),
+-    'file path' => drupal_get_path('module', 'system'),
+-    'file' => 'system.admin.inc',
+-    'weight' => -7,
+-  );
++  // Admin > Configuration > Studyroom
+   $items['admin/config/studyroom'] = array(
+     'title' => 'Studyroom',
+     'description' => 'Configure settings studyroom management.',
+@@ -87,6 +79,25 @@ function studyroom_menu() {
+     'access arguments' => array('configure studyroom settings'),
+     'type' => MENU_NORMAL_ITEM,
+   );
++  // Admin > Content > Studyroom item
++  $items[STUDYROOM_MENU_CONTENT_ADMIN_PATH] = array(
++    'title' => 'Studyroom',
++    'description' => 'View, add, edit, and update reservations',
++    'page callback' => 'system_admin_menu_block_page',
++    'access arguments' => array('access administration pages'),
++    'file path' => drupal_get_path('module', 'system'),
++    'file' => 'system.admin.inc',
++  );
++  // Admin > Structure > Studyroom item
++  $items[STUDYROOM_MENU_STRUCTURE_ADMIN_PATH] = array(
++    'title' => 'Studyroom',
++    'description' => 'Add, edit, and update study rooms and related entities',
++    'page callback' => 'system_admin_menu_block_page',
++    'access arguments' => array('access administration pages'),
++    'file path' => drupal_get_path('module', 'system'),
++    'file' => 'system.admin.inc',
++  );
++
+   return $items;
+ }
+ 
+@@ -98,8 +109,8 @@ function studyroom_settings_form() {
+ 
+   $form['time_increment'] = array(
+     '#type' => 'fieldset',
+-    '#title' => t('Display hour increments'),
+-    '#description' => t('This will determine the hour increment to use when displaying hours of the day to the screen.'),
++    '#title' => t('Display time increments, in minutes'),
++    '#description' => t('This will determine the minute increment to use when displaying hours of the day to the screen.'),
+   );
+   $form['time_increment']['studyroom_time_increment'] = array(
+     '#type' => 'select', '#title' => t('Time increments'),
+@@ -128,14 +139,14 @@ function studyroom_settings_form() {
+     '#title' => t('Limit start time'),
+     '#default_value' => variable_get('studyroom_limit_start', ''),
+     '#options' => array('' => '- None -') + drupal_map_assoc($hours, 'studyroom_format_hours_ampm'),
+-    '#description' => t("Set the global day start time.  No time's used in this package will be allowed to start before this time."),
++    '#description' => t("Set the global day start time.  No times used in this package will be allowed to start before this time."),
+   );
+   $form['time_limit']['studyroom_limit_end'] = array(
+     '#type' => 'select',
+     '#title' => t('Limit end time'),
+     '#default_value' => variable_get('studyroom_limit_end', ''),
+     '#options' => array('' => '- None -') + drupal_map_assoc($hours, 'studyroom_format_hours_ampm'),
+-    '#description' => t("Set the global day end time.  No time's used in this package will be allowed to end after this time."),
++    '#description' => t("Set the global day end time.  No times used in this package will be allowed to end after this time."),
+   );
+ 
+   $studyroom = new Studyroom();
+@@ -148,14 +159,14 @@ function studyroom_settings_form() {
+     '#type' => 'select',
+     '#title' => t('Set minimum duration'),
+     '#default_value' => variable_get('studyroom_min_duration', ''),
+-    '#options' => $studyroom->optionsMinDuartion(FALSE),
++    '#options' => $studyroom->optionsMinDuration(FALSE),
+     '#description' => t("Set the global minimum duration for a reservation."),
+   );
+   $form['rules']['studyroom_max_duration'] = array(
+     '#type' => 'select',
+     '#title' => t('Set maximum duration'),
+     '#default_value' => variable_get('studyroom_max_duration', ''),
+-    '#options' => $studyroom->optionsMaxDuartion(),
++    '#options' => $studyroom->optionsMaxDuration(),
+     '#description' => t("Set the global maximum duration for a reservation."),
+   );
+   $form['rules']['studyroom_max_days_advance'] = array(
+@@ -165,6 +176,13 @@ function studyroom_settings_form() {
+     '#options' => $studyroom->optionsMaxDayAdvance(),
+     '#description' => t("Set the global maximum days in advance a reservation can be made."),
+   );
++  $form['rules']['studyroom_max_times_per_week'] = array(
++    '#type' => 'select',
++    '#title' => t('Set maximum reservations per week'),
++    '#default_value' => variable_get('studyroom_max_times_per_week', ''),
++    '#options' => $studyroom->optionsMaxTimesPerWeek(),
++    '#description' => t("Set the global maximum reservations per week per user."),
++  );
+ 
+   $form['#submit'][] = 'studyroom_settings_form_submit';
+   return system_settings_form($form);
+@@ -206,6 +224,10 @@ function studyroom_settings_form_validate($form, &$form_state) {
+   if (empty($values['studyroom_max_days_advance'])) {
+     form_set_value($form['rules']['studyroom_max_days_advance'], NULL, $form_state);
+   }
++
++  if (empty($values['studyroom_max_times_per_week'])) {
++    form_set_value($form['rules']['studyroom_max_times_per_week'], NULL, $form_state);
++  }
+ }
+ 
+ /**
